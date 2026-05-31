@@ -568,7 +568,13 @@ pub struct EmitBlock {
     pub env: EnvMap,
 
     #[serde(default)]
+    pub env_hosts: BTreeMap<String, EnvMap>,
+
+    #[serde(default)]
     pub env_derived: EnvMap,
+
+    #[serde(default)]
+    pub env_derived_hosts: BTreeMap<String, EnvMap>,
 
     #[serde(default)]
     pub aliases: AliasMap,

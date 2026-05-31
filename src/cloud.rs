@@ -269,14 +269,7 @@ fn emit_cloud_module_into(
 ) -> Result<()> {
     let r = Resolver::new(ctx, &rt.vars).with_detect(detect);
 
-    let mut assigns: BTreeMap<String, String> = BTreeMap::new();
-
-    for (k, v) in emit.env.iter() {
-        assigns.insert(k.clone(), r.resolve(v)?);
-    }
-    for (k, v) in emit.env_derived.iter() {
-        assigns.insert(k.clone(), r.resolve(v)?);
-    }
+    let assigns = collect_env_assignments(ctx, rt, detect, emit)?;
 
     for (k, v) in order_env_assignments(&assigns) {
         em.set_env(out, &k, &v);
@@ -311,16 +304,7 @@ fn apply_emit_effects_to_runtime(
     detect: &DetectVars,
     emit: &EmitBlock,
 ) -> Result<()> {
-    let snap1 = rt.vars.clone();
-    let r1 = Resolver::new(ctx, &snap1).with_detect(detect);
-
-    let mut assigns: BTreeMap<String, String> = BTreeMap::new();
-    for (k, v) in emit.env.iter() {
-        assigns.insert(k.clone(), r1.resolve(v)?);
-    }
-    for (k, v) in emit.env_derived.iter() {
-        assigns.insert(k.clone(), r1.resolve(v)?);
-    }
+    let assigns = collect_env_assignments(ctx, rt, detect, emit)?;
 
     for (k, v) in order_env_assignments(&assigns) {
         rt.vars.insert(k, v);
@@ -443,6 +427,60 @@ fn order_env_assignments(assigns: &BTreeMap<String, String>) -> Vec<(String, Str
         .map(|k| (k.clone(), assigns.get(&k).cloned().unwrap_or_default()))
         .collect()
 }
+
+fn host_env_map<'a>(
+    maps: &'a BTreeMap<String, crate::config::EnvMap>,
+    host: &str,
+) -> Option<&'a crate::config::EnvMap> {
+    maps.get(host)
+        .or_else(|| maps.get(&host.to_ascii_lowercase()))
+        .or_else(|| maps.get(&host.to_ascii_uppercase()))
+}
+
+fn collect_env_assignments(
+    ctx: &ContextEnv,
+    rt: &RuntimeEnv,
+    detect: &DetectVars,
+    emit: &EmitBlock,
+) -> Result<BTreeMap<String, String>> {
+    let r = Resolver::new(ctx, &rt.vars).with_detect(detect);
+    let mut assigns: BTreeMap<String, String> = BTreeMap::new();
+
+    // 1. Base env
+    for (k, v) in emit.env.iter() {
+        assigns.insert(k.clone(), r.resolve(v)?);
+    }
+
+    // 2. Host env overrides
+    if let Some(host_env) = host_env_map(&emit.env_hosts, ctx.host()) {
+        for (k, v) in host_env.iter() {
+            assigns.insert(k.clone(), r.resolve(v)?);
+        }
+    }
+
+    // Runtime for env_derived should see env + host env overrides.
+    let mut derived_vars = rt.vars.clone();
+    for (k, v) in assigns.iter() {
+        derived_vars.insert(k.clone(), v.clone());
+    }
+
+    let r_derived = Resolver::new(ctx, &derived_vars).with_detect(detect);
+
+    // 3. Base derived env
+    for (k, v) in emit.env_derived.iter() {
+        assigns.insert(k.clone(), r_derived.resolve(v)?);
+    }
+
+    // 4. Host derived env overrides
+    if let Some(host_env_derived) = host_env_map(&emit.env_derived_hosts, ctx.host()) {
+        for (k, v) in host_env_derived.iter() {
+            assigns.insert(k.clone(), r_derived.resolve(v)?);
+        }
+    }
+
+    Ok(assigns)
+}
+
 
 fn extract_deps_posix(v: &str) -> Vec<String> {
     let re = Regex::new(r"\$([A-Za-z_][A-Za-z0-9_]*)|\$\{([A-Za-z_][A-Za-z0-9_]*)\}").unwrap();

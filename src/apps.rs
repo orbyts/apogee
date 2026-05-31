@@ -462,13 +462,7 @@ fn emit_app_module_into(
     let r = Resolver::new(ctx, &rt.vars).with_detect(detect);
 
     // Combine env + env_derived into one assignment map (tokens resolved, $VARS preserved)
-    let mut assigns: BTreeMap<String, String> = BTreeMap::new();
-    for (k, v) in emit.env.iter() {
-        assigns.insert(k.clone(), r.resolve(v)?);
-    }
-    for (k, v) in emit.env_derived.iter() {
-        assigns.insert(k.clone(), r.resolve(v)?);
-    }
+    let assigns = collect_env_assignments(ctx, rt, detect, emit)?;
 
     // Emit env exports in dependency order (based on $VAR refs)
     for (k, v) in order_env_assignments(&assigns) {
@@ -552,16 +546,7 @@ fn apply_emit_effects_to_runtime(
     emit: &EmitBlock,
 ) -> Result<()> {
     // -------- 1) ENV: resolve using a snapshot, then apply into rt.vars --------
-    let snap1 = rt.vars.clone();
-    let r1 = Resolver::new(ctx, &snap1).with_detect(detect);
-
-    let mut assigns: BTreeMap<String, String> = BTreeMap::new();
-    for (k, v) in emit.env.iter() {
-        assigns.insert(k.clone(), r1.resolve(v)?);
-    }
-    for (k, v) in emit.env_derived.iter() {
-        assigns.insert(k.clone(), r1.resolve(v)?);
-    }
+    let assigns = collect_env_assignments(ctx, rt, detect, emit)?;
 
     for (k, v) in order_env_assignments(&assigns) {
         rt.vars.insert(k, v);
@@ -655,20 +640,22 @@ fn has_glob(pattern: &str) -> bool {
 fn all_path_matches(pattern: &str) -> Result<Vec<String>> {
     // Fast path: no glob chars => treat as normal path
     if !has_glob(pattern) {
-        return Ok(Path::new(pattern)
-            .exists()
-            .then(|| vec![pattern.to_string()])
-            .unwrap_or_default());
+        if Path::new(pattern).exists() {
+            return Ok(vec![pattern.to_string()]);
+        }
+
+        return Ok(Vec::new());
     }
 
     let mut out: Vec<String> = Vec::new();
 
-    for entry in glob(pattern).with_context(|| format!("invalid glob pattern: {pattern}"))? {
-        if let Ok(p) = entry {
-            // glob() only yields existing paths, but keep this explicit
-            if p.exists() {
-                out.push(p.to_string_lossy().to_string());
-            }
+    for p in glob(pattern)
+        .with_context(|| format!("invalid glob pattern: {pattern}"))?
+        .flatten()
+    {
+        // glob() only yields existing paths, but keep this explicit
+        if p.exists() {
+            out.push(p.to_string_lossy().to_string());
         }
     }
 
@@ -1242,6 +1229,59 @@ fn order_env_assignments(assigns: &BTreeMap<String, String>) -> Vec<(String, Str
         .into_iter()
         .map(|k| (k.clone(), assigns.get(&k).cloned().unwrap_or_default()))
         .collect()
+}
+
+fn host_env_map<'a>(
+    maps: &'a BTreeMap<String, crate::config::EnvMap>,
+    host: &str,
+) -> Option<&'a crate::config::EnvMap> {
+    maps.get(host)
+        .or_else(|| maps.get(&host.to_ascii_lowercase()))
+        .or_else(|| maps.get(&host.to_ascii_uppercase()))
+}
+
+fn collect_env_assignments(
+    ctx: &ContextEnv,
+    rt: &RuntimeEnv,
+    detect: &DetectVars,
+    emit: &EmitBlock,
+) -> Result<BTreeMap<String, String>> {
+    let r = Resolver::new(ctx, &rt.vars).with_detect(detect);
+    let mut assigns: BTreeMap<String, String> = BTreeMap::new();
+
+    // 1. Base env
+    for (k, v) in emit.env.iter() {
+        assigns.insert(k.clone(), r.resolve(v)?);
+    }
+
+    // 2. Host env overrides
+    if let Some(host_env) = host_env_map(&emit.env_hosts, ctx.host()) {
+        for (k, v) in host_env.iter() {
+            assigns.insert(k.clone(), r.resolve(v)?);
+        }
+    }
+
+    // Runtime for env_derived should see env + host env overrides.
+    let mut derived_vars = rt.vars.clone();
+    for (k, v) in assigns.iter() {
+        derived_vars.insert(k.clone(), v.clone());
+    }
+
+    let r_derived = Resolver::new(ctx, &derived_vars).with_detect(detect);
+
+    // 3. Base derived env
+    for (k, v) in emit.env_derived.iter() {
+        assigns.insert(k.clone(), r_derived.resolve(v)?);
+    }
+
+    // 4. Host derived env overrides
+    if let Some(host_env_derived) = host_env_map(&emit.env_derived_hosts, ctx.host()) {
+        for (k, v) in host_env_derived.iter() {
+            assigns.insert(k.clone(), r_derived.resolve(v)?);
+        }
+    }
+
+    Ok(assigns)
 }
 
 fn extract_deps_posix(v: &str) -> Vec<String> {
