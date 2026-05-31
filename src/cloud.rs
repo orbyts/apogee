@@ -467,20 +467,28 @@ fn collect_env_assignments(
     let r_derived = Resolver::new(ctx, &derived_vars).with_detect(detect);
 
     // 3. Base derived env
+    let mut base_derived: BTreeMap<String, String> = BTreeMap::new();
+
     for (k, v) in emit.env_derived.iter() {
-        assigns.insert(k.clone(), r_derived.resolve(v)?);
+        base_derived.insert(k.clone(), r_derived.resolve(v)?);
     }
 
-    // 4. Host derived env overrides
+    for (k, v) in base_derived.iter() {
+        assigns.insert(k.clone(), v.clone());
+        derived_vars.insert(k.clone(), v.clone());
+    }
+
+    // 4. Host derived env overrides should see base derived env too.
+    let r_host_derived = Resolver::new(ctx, &derived_vars).with_detect(detect);
+
     if let Some(host_env_derived) = host_env_map(&emit.env_derived_hosts, ctx.host()) {
         for (k, v) in host_env_derived.iter() {
-            assigns.insert(k.clone(), r_derived.resolve(v)?);
+            assigns.insert(k.clone(), r_host_derived.resolve(v)?);
         }
     }
 
     Ok(assigns)
 }
-
 
 fn extract_deps_posix(v: &str) -> Vec<String> {
     let re = Regex::new(r"\$([A-Za-z_][A-Za-z0-9_]*)|\$\{([A-Za-z_][A-Za-z0-9_]*)\}").unwrap();

@@ -120,13 +120,9 @@ fn detect_one_app(
             format!("apps.{name}: failed to resolve detect file pattern: {raw}")
         })?;
 
-        if let Some((found, ver)) = best_path_match_by_version(
-            ctx,
-            rt,
-            m.detect.version.as_ref(),
-            "file",
-            &resolved,
-        )? {
+        if let Some((found, ver)) =
+            best_path_match_by_version(ctx, rt, m.detect.version.as_ref(), "file", &resolved)?
+        {
             detect.insert("file".to_string(), found);
             if let Some(v) = ver {
                 detect.insert("version".to_string(), v);
@@ -149,13 +145,9 @@ fn detect_one_app(
             format!("apps.{name}: failed to resolve detect path pattern: {raw}")
         })?;
 
-        if let Some((found, ver)) = best_path_match_by_version(
-            ctx,
-            rt,
-            m.detect.version.as_ref(),
-            "path",
-            &resolved,
-        )? {
+        if let Some((found, ver)) =
+            best_path_match_by_version(ctx, rt, m.detect.version.as_ref(), "path", &resolved)?
+        {
             detect.insert("path".to_string(), found);
             if let Some(v) = ver {
                 detect.insert("version".to_string(), v);
@@ -772,10 +764,9 @@ fn best_path_match_by_version(
                     Ordering::Equal => {
                         // tie-break by mtime, then path
                         match (mt, best_mtime) {
-                            (Some(a), Some(b)) => a
-                                .partial_cmp(&b)
-                                .unwrap_or(Ordering::Equal)
-                                == Ordering::Greater,
+                            (Some(a), Some(b)) => {
+                                a.partial_cmp(&b).unwrap_or(Ordering::Equal) == Ordering::Greater
+                            }
                             (Some(_), None) => true,
                             (None, Some(_)) => false,
                             (None, None) => p > *_bp,
@@ -791,10 +782,9 @@ fn best_path_match_by_version(
             (Some(bp), None, Some(bmt)) if ver.is_none() => {
                 // neither has version => compare mtime
                 match (mt, Some(*bmt)) {
-                    (Some(a), Some(b)) => a
-                        .partial_cmp(&b)
-                        .unwrap_or(Ordering::Equal)
-                        == Ordering::Greater,
+                    (Some(a), Some(b)) => {
+                        a.partial_cmp(&b).unwrap_or(Ordering::Equal) == Ordering::Greater
+                    }
                     (Some(_), None) => true,
                     (None, Some(_)) => false,
                     (None, None) => p > *bp,
@@ -1270,14 +1260,23 @@ fn collect_env_assignments(
     let r_derived = Resolver::new(ctx, &derived_vars).with_detect(detect);
 
     // 3. Base derived env
+    let mut base_derived: BTreeMap<String, String> = BTreeMap::new();
+
     for (k, v) in emit.env_derived.iter() {
-        assigns.insert(k.clone(), r_derived.resolve(v)?);
+        base_derived.insert(k.clone(), r_derived.resolve(v)?);
     }
 
-    // 4. Host derived env overrides
+    for (k, v) in base_derived.iter() {
+        assigns.insert(k.clone(), v.clone());
+        derived_vars.insert(k.clone(), v.clone());
+    }
+
+    // 4. Host derived env overrides should see base derived env too.
+    let r_host_derived = Resolver::new(ctx, &derived_vars).with_detect(detect);
+
     if let Some(host_env_derived) = host_env_map(&emit.env_derived_hosts, ctx.host()) {
         for (k, v) in host_env_derived.iter() {
-            assigns.insert(k.clone(), r_derived.resolve(v)?);
+            assigns.insert(k.clone(), r_host_derived.resolve(v)?);
         }
     }
 
